@@ -548,7 +548,7 @@ void loop()
     oled.clear();
     oled.setScale(2);
     oled.setCursorXY(33, 31);
-    oled.print(cnt_zero_vel);
+    oled.print(it_c);
     oled.setCursorXY(33, 16);
     oled.print(count);
     // if (!fix_vel)
