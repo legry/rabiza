@@ -241,7 +241,7 @@ static void pcnt_example_init(pcnt_unit_t unit, float lim)
       .hctrl_mode = PCNT_MODE_DISABLE, // Keep the primary counter mode if high
       .pos_mode = PCNT_COUNT_DIS,      // Count up on the positive edge
       .neg_mode = PCNT_COUNT_INC,      // Keep the counter value on the negative edge
-      .counter_h_lim = lim*2,
+      .counter_h_lim = 1000,
       // .counter_l_lim = PCNT_L_LIM_VAL,
       .unit = unit,
       .channel = PCNT_CHANNEL_0,
@@ -254,13 +254,13 @@ static void pcnt_example_init(pcnt_unit_t unit, float lim)
   pcnt_filter_enable(unit);
 
   /* Set threshold 0 and 1 values and enable events to watch */
-  // pcnt_set_event_value(unit, PCNT_EVT_THRES_1, PCNT_THRESH1_VAL);
-  // pcnt_event_enable(unit, PCNT_EVT_THRES_1);
-  pcnt_set_event_value(unit, PCNT_EVT_THRES_0, lim*2 - 2);
+  pcnt_set_event_value(unit, PCNT_EVT_THRES_1, lim * 2);
+  pcnt_event_enable(unit, PCNT_EVT_THRES_1);
+  pcnt_set_event_value(unit, PCNT_EVT_THRES_0, lim * 2 - 2);
   pcnt_event_enable(unit, PCNT_EVT_THRES_0);
   /* Enable events on zero, maximum and minimum limit values */
   // pcnt_event_enable(unit, PCNT_EVT_ZERO);
-  pcnt_event_enable(unit, PCNT_EVT_H_LIM);
+  // pcnt_event_enable(unit, PCNT_EVT_H_LIM);
   // pcnt_event_enable(unit, PCNT_EVT_L_LIM);
 
   /* Install interrupt service and add isr callback handler */
@@ -272,12 +272,12 @@ void changing_pcnt()
 {
   if (!*cnt_rot)
   {
-    pcnt_set_event_value(pcnt_unit, PCNT_EVT_H_LIM, cnt_lim*2);
-    if (cnt_lim*2 > 1)
+    pcnt_set_event_value(pcnt_unit, PCNT_EVT_THRES_1, cnt_lim * 2);
+    if (cnt_lim * 2 > 1)
     {
       vel = &regvel;
       setvel();
-      pcnt_set_event_value(pcnt_unit, PCNT_EVT_THRES_0, cnt_lim*2 - 2);
+      pcnt_set_event_value(pcnt_unit, PCNT_EVT_THRES_0, cnt_lim * 2 - 2);
       pcnt_event_enable(pcnt_unit, PCNT_EVT_THRES_0);
     }
     else
@@ -292,23 +292,25 @@ void changing_pcnt()
   }
 }
 
-void oled_update(void * parameter) {
-  for(;;){
+void oled_update(void *parameter)
+{
+  for (;;)
+  {
     oled.clear();
     oled.setCursorXY(0, 0);
     oled.setScale(1);
     oled.print("Об. ");
-    oled.setScale(3); 
-    oled.print((float) count/2, 1); 
+    oled.setScale(3);
+    oled.print((float)count / 2, 1);
     oled.setScale(1);
-    oled.print("/"); 
+    oled.print("/");
     oled.print(n_set, 1);
     oled.setCursorXY(0, 31);
-    oled.print("Цк. "); 
+    oled.print("Цк. ");
     oled.setScale(3);
-    oled.print(it_c); 
+    oled.print(it_c);
     oled.setScale(1);
-    oled.print("/"); 
+    oled.print("/");
     oled.print(c_set, 1);
     // oled.setCursorXY(80, 46);
     // oled.print(*vel);
@@ -319,7 +321,6 @@ void oled_update(void * parameter) {
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
-
 
 void setup()
 {
@@ -442,13 +443,57 @@ void loop()
   deb_sens_kar1.update();
   deb_sens_kar2.update();
   deb_sens_cut.update();
-// mcp.digitalWrite(FWD_KAR, !mcp.digitalRead(main_kar1) && mcp.digitalRead(sens_kar1));
-// mcp.digitalWrite(REV_KAR, !mcp.digitalRead(main_kar2) && mcp.digitalRead(sens_kar2));
+  res = xQueueReceive(pcnt_evt_queue, &evt, 0);
+  if (res == pdTRUE)
+  {
+    pcnt_get_counter_value(pcnt_unit, &count);
+    // if (evt.status & PCNT_EVT_ZERO)
+    // {
+    //   Serial.println("ZERO EVT");
+    // }
+    if (evt.status & PCNT_EVT_THRES_0)
+    {
+      // Serial.println("THRES0 EVT");
+      // fix_vel = true;
+      vel = &fixvel;
+      setvel();
+    }
+    if (evt.status & PCNT_EVT_THRES_1)
+    {
+      // Serial.println("H_LIM EVT");
+      *cnt_rot = false;
+      // fix_vel = false;
+      vel = &regvel;
+      setvel();
+    }
+  }
+  else
+  {
+    pcnt_get_counter_value(pcnt_unit, &count);
+    // ESP_LOGI(TAG, "Current counter value :%d", count);
+  }
+  if (!deb_sens_kar2.read())
+  {
+    if (cnt_lim != n_set)
+    {
+      cnt_lim = n_set;
+      changing_pcnt();
+    }
+  }
+  if (!deb_sens_kar1.read())
+  {
+    if (cnt_lim != (n_set + 1))
+    {
+      cnt_lim = n_set + 1;
+      changing_pcnt();
+    }
+  }
   if (deb_main_aut.read())
   {
     if (deb_main_aut.rose())
     {
-      if (it_c == c_set) it_c = 0;
+      if (it_c == c_set)
+        it_c = 0;
       cut_aut = false;
       fwdkar = &main_fwd_kar;
       revkar = &main_rev_kar;
@@ -457,11 +502,11 @@ void loop()
     }
     aut_mode_perm = deb_sens_kar1.read() != deb_sens_kar2.read();
     rot = !deb_main_rot1.read();
-    if (cnt_lim != n_set)
-    {
-      cnt_lim = n_set;
-      changing_pcnt();
-    }
+    // if (cnt_lim != n_set)
+    // {
+    //   cnt_lim = n_set;
+    //   changing_pcnt();
+    // }
     if (deb_main_rot2.fell())
     {
       if (count != 0)
@@ -482,37 +527,27 @@ void loop()
       fwdkar = &aut_fwd_kar;
       revkar = &aut_rev_kar;
       cut = &cut_aut;
+      pcnt_counter_clear(pcnt_unit);
+      cnt_aut_rot = true;
     }
-    if ((deb_main_aut.fell() && !deb_sens_kar2.read()) || deb_sens_kar2.fell())
-    {
-      if (cnt_lim != n_set)
-      {
-        cnt_lim = n_set;
-        changing_pcnt();
-      }
-    }
-    if ((deb_main_aut.fell() && !deb_sens_kar1.read()) || deb_sens_kar1.fell())
-    {
-      if (cnt_lim != (n_set + 1))
-      {
-        cnt_lim = n_set + 1;
-        changing_pcnt();
-      }
-    }
-    cnt_aut_rot = (it_c < c_set) && (deb_main_aut.fell() || cnt_aut_rot);
+    cnt_aut_rot = (it_c < c_set) && ((deb_sens_kar1.fell() || deb_sens_kar2.fell()) || cnt_aut_rot);
     if (cnt_rot != &cnt_aut_rot)
       cnt_rot = &cnt_aut_rot;
-    aut_fwd_kar = (((!cnt_aut_rot && mcp.digitalRead(FWD_ROT) && !deb_sens_kar2.read()) || aut_fwd_kar) && deb_sens_kar1.read());
-    aut_rev_kar = (((!cnt_aut_rot && mcp.digitalRead(FWD_ROT) && !deb_sens_kar1.read()) || aut_rev_kar) && deb_sens_kar2.read());
     if (!deb_sens_cut.fell())
-      cut_aut = ((!aut_fwd_kar && mcp.digitalRead(FWD_KAR)) || (!aut_rev_kar && mcp.digitalRead(REV_KAR))) || cut_aut;
+      cut_aut = /* ((!aut_fwd_kar && mcp.digitalRead(FWD_KAR)) || (!aut_rev_kar && mcp.digitalRead(REV_KAR)))  */
+          (!cnt_aut_rot && mcp.digitalRead(FWD_ROT)) || cut_aut;
     else if (cut_aut)
     {
       cut_aut = false;
       it_c = it_c < c_set ? it_c + 1 : it_c;
       if (it_c < c_set)
-        cnt_aut_rot = true;
+      {
+        pcnt_counter_clear(pcnt_unit);
+        // cnt_aut_rot = true;
+      }
     }
+    aut_fwd_kar = (((!cut_aut && mcp.digitalRead(FWD_CUT) && !deb_sens_kar2.read()) || aut_fwd_kar) && deb_sens_kar1.read());
+    aut_rev_kar = (((!cut_aut && mcp.digitalRead(FWD_CUT) && !deb_sens_kar1.read()) || aut_rev_kar) && deb_sens_kar2.read());
   }
 
   if (!deb_al_stop.read())
@@ -578,7 +613,7 @@ void loop()
     //   Serial.print("l_it_c = ");
     //   Serial.println(l_it_c);
     // }
-    
+
     // oled.clear();
     // oled.setScale(2);
     // oled.setCursorXY(33, 31);
@@ -597,34 +632,5 @@ void loop()
     // oled_print();
     // oled.update();
     // Serial.println("al_stop Pressed!");
-  }
-  res = xQueueReceive(pcnt_evt_queue, &evt, 0);
-  if (res == pdTRUE)
-  {
-    pcnt_get_counter_value(pcnt_unit, &count);
-    // if (evt.status & PCNT_EVT_ZERO)
-    // {
-    //   Serial.println("ZERO EVT");
-    // }
-    if (evt.status & PCNT_EVT_THRES_0)
-    {
-      // Serial.println("THRES0 EVT");
-      // fix_vel = true;
-      vel = &fixvel;
-      setvel();
-    }
-    if (evt.status & PCNT_EVT_H_LIM)
-    {
-      // Serial.println("H_LIM EVT");
-      *cnt_rot = false;
-      // fix_vel = false;
-      vel = &regvel;
-      setvel();
-    }
-  }
-  else
-  {
-    pcnt_get_counter_value(pcnt_unit, &count);
-    // ESP_LOGI(TAG, "Current counter value :%d", count);
   }
 }
