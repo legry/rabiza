@@ -62,15 +62,12 @@ BounceMcp deb_main_cut = BounceMcp();
 BounceMcp deb_sens_kar1 = BounceMcp();
 BounceMcp deb_sens_kar2 = BounceMcp();
 BounceMcp deb_sens_cut = BounceMcp();
-// See the following for generating UUIDs:
-// https://www.uuidgenerator.net/
 
-// #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-// #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 GyverOLED<SSH1106_128x64> oled;
 File file;
 JsonDocument doc;
-int16_t n_set = 15, cnt_lim = 0, c_set = 25, it_c = 0;
+float n_set = 15.5, cnt_lim = 0;
+int16_t c_set = 25, it_c = 0;
 byte *vel = 0, prev_vel = 0, fixvel = 15, regvel = 0;
 unsigned long tm = 0;
 bool aut_mode_perm = false, cnt_main_rot = false, cnt_aut_rot = false, rot = false, cnt_lim_chng = false, *fwdkar, *revkar, aut_fwd_kar = false,
@@ -145,7 +142,7 @@ void setvel()
   if (((*vel - prev_vel) >= 1) || ((*vel - prev_vel) <= -1))
   {
     prev_vel = *vel;
-    ledcWriteTone(0, (uint32_t)map(*vel, 0, 100, 20, 5000));
+    ledcWriteTone(0, (uint32_t)map(*vel, 0, 100, 200, 5000));
     regvelCharacteristic.setValue(String(*vel));
   }
 }
@@ -196,6 +193,14 @@ static void IRAM_ATTR pcnt_example_intr_handler(void *arg)
   xQueueSendFromISR(pcnt_evt_queue, &evt, NULL);
 }
 
+void saveConfig(const char *nameParam, float *value)
+{
+  doc[nameParam] = *value;
+  file = SPIFFS.open("/config.txt", FILE_WRITE);
+  serializeJson(doc, file);
+  file.close();
+}
+
 void saveConfig(const char *nameParam, int16_t *value)
 {
   doc[nameParam] = *value;
@@ -206,9 +211,9 @@ void saveConfig(const char *nameParam, int16_t *value)
 
 void nsetCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic)
 {
-  if (((int16_t)nsetCharacteristic.value().toInt() != n_set) && ((int16_t)nsetCharacteristic.value().toInt() > 3))
+  if ((nsetCharacteristic.value().toFloat() != n_set) && ((int16_t)nsetCharacteristic.value().toFloat() > 3.0))
   {
-    n_set = (int16_t)nsetCharacteristic.value().toInt();
+    n_set = nsetCharacteristic.value().toFloat();
     saveConfig("n_set", &n_set);
   }
 }
@@ -217,7 +222,7 @@ void csetCharacteristicWritten(BLEDevice central, BLECharacteristic characterist
 {
   if (((int16_t)csetCharacteristic.value().toInt() != c_set) && ((int16_t)csetCharacteristic.value().toInt() > 0))
     c_set = (int16_t)csetCharacteristic.value().toInt();
-  saveConfig("c_set", &c_set);
+  saveConfig("c_set", (&c_set));
 }
 
 void fixvelCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic)
@@ -225,7 +230,7 @@ void fixvelCharacteristicWritten(BLEDevice central, BLECharacteristic characteri
   fixvel = (unsigned int)fixvelCharacteristic.value().toInt();
 }
 
-static void pcnt_example_init(pcnt_unit_t unit, int16_t lim)
+static void pcnt_example_init(pcnt_unit_t unit, float lim)
 {
 
   pcnt_config_t pcnt_config = {
@@ -236,7 +241,7 @@ static void pcnt_example_init(pcnt_unit_t unit, int16_t lim)
       .hctrl_mode = PCNT_MODE_DISABLE, // Keep the primary counter mode if high
       .pos_mode = PCNT_COUNT_DIS,      // Count up on the positive edge
       .neg_mode = PCNT_COUNT_INC,      // Keep the counter value on the negative edge
-      .counter_h_lim = lim,
+      .counter_h_lim = lim*2,
       // .counter_l_lim = PCNT_L_LIM_VAL,
       .unit = unit,
       .channel = PCNT_CHANNEL_0,
@@ -251,7 +256,7 @@ static void pcnt_example_init(pcnt_unit_t unit, int16_t lim)
   /* Set threshold 0 and 1 values and enable events to watch */
   // pcnt_set_event_value(unit, PCNT_EVT_THRES_1, PCNT_THRESH1_VAL);
   // pcnt_event_enable(unit, PCNT_EVT_THRES_1);
-  pcnt_set_event_value(unit, PCNT_EVT_THRES_0, lim - 3);
+  pcnt_set_event_value(unit, PCNT_EVT_THRES_0, lim*2 - 2);
   pcnt_event_enable(unit, PCNT_EVT_THRES_0);
   /* Enable events on zero, maximum and minimum limit values */
   // pcnt_event_enable(unit, PCNT_EVT_ZERO);
@@ -267,12 +272,12 @@ void changing_pcnt()
 {
   if (!*cnt_rot)
   {
-    pcnt_set_event_value(pcnt_unit, PCNT_EVT_H_LIM, cnt_lim);
-    if (cnt_lim > 3)
+    pcnt_set_event_value(pcnt_unit, PCNT_EVT_H_LIM, cnt_lim*2);
+    if (cnt_lim*2 > 1)
     {
       vel = &regvel;
       setvel();
-      pcnt_set_event_value(pcnt_unit, PCNT_EVT_THRES_0, cnt_lim - 3);
+      pcnt_set_event_value(pcnt_unit, PCNT_EVT_THRES_0, cnt_lim*2 - 2);
       pcnt_event_enable(pcnt_unit, PCNT_EVT_THRES_0);
     }
     else
@@ -286,6 +291,35 @@ void changing_pcnt()
     pcnt_counter_clear(pcnt_unit);
   }
 }
+
+void oled_update(void * parameter) {
+  for(;;){
+    oled.clear();
+    oled.setCursorXY(0, 0);
+    oled.setScale(1);
+    oled.print("Об. ");
+    oled.setScale(3); 
+    oled.print((float) count/2, 1); 
+    oled.setScale(1);
+    oled.print("/"); 
+    oled.print(n_set, 1);
+    oled.setCursorXY(0, 31);
+    oled.print("Цк. "); 
+    oled.setScale(3);
+    oled.print(it_c); 
+    oled.setScale(1);
+    oled.print("/"); 
+    oled.print(c_set, 1);
+    // oled.setCursorXY(80, 46);
+    // oled.print(*vel);
+    // oled.print("%");
+    // oled.setScale(1);
+    // oled_print();
+    oled.update();
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
 
 void setup()
 {
@@ -343,7 +377,6 @@ void setup()
   //   if (i < 5) mcp.pinMode(i, OUTPUT);
   //   else if (i > 5) mcp.pinMode(i, INPUT);
   // }
-
   if (!BLE.begin())
   {
     // Serial.println("starting Bluetooth® Low Energy module failed!");
@@ -377,7 +410,7 @@ void setup()
   // add service
   BLE.addService(ledService);
   BLE.advertise();
-
+  cnt_lim = n_set;
   cnt_rot = &cnt_main_rot;
   /* Initialize PCNT event queue and PCNT functions */
   pcnt_evt_queue = xQueueCreate(10, sizeof(pcnt_evt_t));
@@ -387,12 +420,13 @@ void setup()
   oled.init(); // инициализация
   oled.clear();
   oled.setScale(1);
-  oled_print();
-  oled.update();
+  // oled_print();
+  // oled.update();
   fwdkar = &main_fwd_kar;
   revkar = &main_rev_kar;
   cut = &cut_main;
   vel = &regvel;
+  xTaskCreatePinnedToCore(oled_update, "OLED UPDATE", 4096, NULL, 1, NULL, 1);
   tm = millis();
 }
 
@@ -408,12 +442,14 @@ void loop()
   deb_sens_kar1.update();
   deb_sens_kar2.update();
   deb_sens_cut.update();
-
+// mcp.digitalWrite(FWD_KAR, !mcp.digitalRead(main_kar1) && mcp.digitalRead(sens_kar1));
+// mcp.digitalWrite(REV_KAR, !mcp.digitalRead(main_kar2) && mcp.digitalRead(sens_kar2));
   if (deb_main_aut.read())
   {
     if (deb_main_aut.rose())
     {
-      it_c = 0;
+      if (it_c == c_set) it_c = 0;
+      cut_aut = false;
       fwdkar = &main_fwd_kar;
       revkar = &main_rev_kar;
       cut = &cut_main;
@@ -449,17 +485,17 @@ void loop()
     }
     if ((deb_main_aut.fell() && !deb_sens_kar2.read()) || deb_sens_kar2.fell())
     {
-      if (cnt_lim != (n_set + 1))
+      if (cnt_lim != n_set)
       {
-        cnt_lim = n_set + 1;
+        cnt_lim = n_set;
         changing_pcnt();
       }
     }
     if ((deb_main_aut.fell() && !deb_sens_kar1.read()) || deb_sens_kar1.fell())
     {
-      if (cnt_lim != n_set)
+      if (cnt_lim != (n_set + 1))
       {
-        cnt_lim = n_set;
+        cnt_lim = n_set + 1;
         changing_pcnt();
       }
     }
@@ -505,32 +541,29 @@ void loop()
     mcp.digitalWrite(REV_KAR, false);
     mcp.digitalWrite(FWD_CUT, false);
   }
-
   BLE.poll();
   if ((millis() - tm) >= 300)
   {
     tm = millis();
-    static byte cnt_zero_vel = 0;
-    if ((*cnt_rot) && !deb_al_stop.read())
-    {
-      if ((old_count == count) && (cnt_zero_vel < 5))
-      {
-        cnt_zero_vel++;
-      }
-      else
-      {
-        if ((cnt_zero_vel == 5))
-        {
-          // Serial.println("zero_vel");
-          *cnt_rot = false;
-          fix_vel = false;
-        }
-        old_count = count;
-        cnt_zero_vel = 0;
-      }
-    }
-    // n = count;
-    // c = (unsigned int)random(50);
+    // static byte cnt_zero_vel = 0;
+    // if ((*cnt_rot) && !deb_al_stop.read())
+    // {
+    //   if ((old_count == count) && (cnt_zero_vel < 5))
+    //   {
+    //     cnt_zero_vel++;
+    //   }
+    //   else
+    //   {
+    //     if ((cnt_zero_vel == 5))
+    //     {
+    //       *cnt_rot = false;
+    //       fix_vel = false;
+    //     }
+    //     old_count = count;
+    //     cnt_zero_vel = 0;
+    //   }
+    // }
+
     // static int16_t lcnt = 0;
     // if (count != lcnt)
     // {
@@ -545,23 +578,24 @@ void loop()
     //   Serial.print("l_it_c = ");
     //   Serial.println(l_it_c);
     // }
-    oled.clear();
-    oled.setScale(2);
-    oled.setCursorXY(33, 31);
-    oled.print(it_c);
-    oled.setCursorXY(33, 16);
-    oled.print(count);
+    
+    // oled.clear();
+    // oled.setScale(2);
+    // oled.setCursorXY(33, 31);
+    // oled.print(it_c);
+    // oled.setCursorXY(33, 16);
+    // oled.print((float) count/2, 1);
     // if (!fix_vel)
     regvel = map(analogRead(36), 0, 4095, 0, 100);
     // else
     //   vel = (byte)fixvel;
     setvel();
-    oled.setCursorXY(80, 46);
-    oled.print(*vel);
-    oled.print("%");
-    oled.setScale(1);
-    oled_print();
-    oled.update();
+    // oled.setCursorXY(80, 46);
+    // oled.print(*vel);
+    // oled.print("%");
+    // oled.setScale(1);
+    // oled_print();
+    // oled.update();
     // Serial.println("al_stop Pressed!");
   }
   res = xQueueReceive(pcnt_evt_queue, &evt, 0);
