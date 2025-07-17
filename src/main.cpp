@@ -1,6 +1,8 @@
 #include <Arduino.h>
-#include <Bounce2mcp.h>
-#include <Adafruit_MCP23X17.h>
+// #include <Bounce2mcp.h>
+// #include <Adafruit_MCP23X17.h>
+#include <Wire.h> // Include the I2C library (required)
+#include <SparkFunSX1509.h>
 #include <GyverOLED.h>
 // GyverOLED<SSD1306_128x32, OLED_BUFFER> oled;
 // GyverOLED<SSD1306_128x32, OLED_NO_BUFFER> oled;
@@ -20,38 +22,138 @@
 /**Bluetooth**/
 // BLE BT;
 #include "SPIFFS.h"
+#include "FS.h"
+// #include "FFat.h"
 #include <ArduinoJson.h>
-
-enum mcp_ins
+enum sx_ins
 {
-  al_stop = 14,
-  main_rot1 = 12,
-  main_rot2 = 8,
-  main_kar1 = 6,
-  main_kar2 = 5,
-  main_aut = 3,
-  main_cut = 1,
-  sens_kar1 = 0,
+  al_stop = 3,
+  main_rot1 = 5,
+  main_rot2 = 7,
+  main_kar1 = 9,
+  main_kar2 = 10,
+  main_aut = 12,
+  main_cut = 14,
+  sens_kar1 = 2,
   sens_kar2 = 15,
-  sens_cut = 13
+  sens_cut = 4
 };
+
+// enum mcp_ins
+// {
+//   al_stop = 14,
+//   main_rot1 = 12,
+//   main_rot2 = 8,
+//   main_kar1 = 6,
+//   main_kar2 = 5,
+//   main_aut = 3,
+//   main_cut = 1,
+//   sens_kar1 = 0,
+//   sens_kar2 = 15,
+//   sens_cut = 13
+// };
 
 enum nat_ins
 {
   sens_rot = 34
 };
 // outputs
-enum outs
+enum sx_outs
 {
   vel_rot = 33,
-  FWD_ROT = 9,
-  FWD_KAR = 7,
-  REV_KAR = 4,
-  FWD_CUT = 2
+  FWD_ROT = 6,
+  FWD_KAR = 8,
+  REV_KAR = 11,
+  FWD_CUT = 13
+};
+// enum outs
+// {
+//   vel_rot = 33,
+//   FWD_ROT = 9,
+//   FWD_KAR = 7,
+//   REV_KAR = 4,
+//   FWD_CUT = 2
+// };
+SX1509 io, *mcp;
+volatile uint16_t intr_src = 0;
+volatile bool is_intr = false;
+// Adafruit_MCP23X17 mcp;
+
+// My deboncing class
+class BounceMcp
+{
+public:
+  BounceMcp();
+
+  // Attach to a MCP object, a pin (and also sets initial state), and set debounce interval.
+  void attach(SX1509 *io, int pin);
+  // Updates the pin
+  // Returns 1 if the state changed
+  // Returns 0 if the state did not change
+  bool update(uint16_t intr_src);
+
+  // Returns the updated pin state
+  bool read();
+
+  // Returns the falling pin state
+  bool fell();
+
+  // Returns the rising pin state
+  bool rose();
+
+protected:
+  uint8_t state, tmp_state = 0;
+  uint8_t pin;
+  SX1509 *io;
 };
 
-Adafruit_MCP23X17 mcp;
+BounceMcp::BounceMcp()
+    : state(0), pin(0) {};
+
+void BounceMcp::attach(SX1509 *io, int pin)
+{
+  this->io = io;
+  this->pin = pin;
+  this->io->pinMode(this->pin, INPUT);
+  this->io->debouncePin(this->pin);
+  this->state = this->io->digitalRead(this->pin);
+  this->tmp_state = this->state;
+  this->io->enableInterrupt(this->pin, CHANGE);
+}
+
+bool BounceMcp::update(uint16_t intr_src)
+{
+  if (intr_src & (1 << this->pin))
+  {
+    this->state = this->io->digitalRead(this->pin);
+    return true;
+  }
+  else
+  {
+    this->tmp_state = this->state;
+    return false;
+  }
+}
+
+bool BounceMcp::read()
+{
+  if (this->state == HIGH)
+    return true;
+  else
+    return false;
+}
+
+bool BounceMcp::fell()
+{
+  return (this->state == 0) && (this->tmp_state == 1);
+}
+
+bool BounceMcp::rose()
+{
+  return (this->state == 1) && (this->tmp_state == 0);
+}
 // Instantiate a Bounce object
+
 BounceMcp deb_al_stop = BounceMcp();
 BounceMcp deb_main_rot1 = BounceMcp();
 BounceMcp deb_main_rot2 = BounceMcp();
@@ -67,11 +169,12 @@ GyverOLED<SSH1106_128x64> oled;
 File file;
 JsonDocument doc;
 float n_set = 15.5, cnt_lim = 0;
-int16_t c_set = 25, it_c = 0;
-byte *vel = 0, prev_vel = 0, fixvel = 15, regvel = 0;
+int16_t *vel = 0, c_set = 25, it_c = 0, fixvel = 15, prev_vel = 0, regvel = 0;
 unsigned long tm = 0;
 bool aut_mode_perm = false, cnt_main_rot = false, cnt_aut_rot = false, rot = false, cnt_lim_chng = false, *fwdkar, *revkar, aut_fwd_kar = false,
-     aut_rev_kar = false, main_fwd_kar = false, main_rev_kar = false, *cut, cut_main = false, cut_aut = false, fix_vel = false, *cnt_rot, isr_inst = false;
+     aut_rev_kar = false, main_fwd_kar = false, main_rev_kar = false, *cut, cut_main = false, cut_aut = false, fix_vel = false, *cnt_rot, isr_inst = false,
+     fwd_rot_out = false, tmp_fwd_rot_out = false, fwd_kar_out = false, tmp_fwd_kar_out = false, rev_kar_out = false, tmp_rev_kar_out = false,
+     fwd_cut_out = false, tmp_fwd_cut_out = false;
 void oled_print()
 {
   // for (byte i = 0; i < 8; i += x) {
@@ -108,10 +211,14 @@ BLEStringCharacteristic nsetCharacteristic("19b10000-e8f2-537e-4f6c-d104768a1214
 BLEStringCharacteristic csetCharacteristic("19b10000-e8f2-537e-4f6c-d104768a1214", BLERead | BLEWrite, 10);
 BLEStringCharacteristic fixvelCharacteristic("19b10000-e8f2-537e-4f6c-d104768a1214", BLERead | BLEWrite, 10);
 BLEStringCharacteristic regvelCharacteristic("19b10000-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 10);
+BLEStringCharacteristic ncntCharacteristic("19b10000-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 10);
+BLEStringCharacteristic ccntCharacteristic("19b10000-e8f2-537e-4f6c-d104768a1214", BLERead | BLENotify, 10);
 BLEDescriptor nsetDesc("19b10000-e8f2-537e-4f6c-d104768a1214", "Колличество оборотов");
 BLEDescriptor csetDesc("19b10000-e8f2-537e-4f6c-d104768a1214", "Колличество циклов");
 BLEDescriptor fixvelDesc("19b10000-e8f2-537e-4f6c-d104768a1214", "Фикс. скорость");
 BLEDescriptor regvelDesc("19b10000-e8f2-537e-4f6c-d104768a1214", "Регул. скорость");
+BLEDescriptor ncntDesc("19b10000-e8f2-537e-4f6c-d104768a1214", "Счетчик оборотов");
+BLEDescriptor ccntDesc("19b10000-e8f2-537e-4f6c-d104768a1214", "Счетчик циклов");
 
 pcnt_unit_t pcnt_unit = PCNT_UNIT_0;
 
@@ -175,8 +282,11 @@ void pause_cnt()
 void resume_cnt()
 {
   // attachInterrupt(sens_rot, sens_rot_isr, FALLING);
-  pcnt_counter_resume(pcnt_unit);
-  isr_inst = true;
+  if (!isr_inst)
+  {
+    isr_inst = true;
+    pcnt_counter_resume(pcnt_unit);
+  }
 }
 /* Decode what PCNT's unit originated an interrupt
  * and pass this information together with the event type
@@ -221,13 +331,19 @@ void nsetCharacteristicWritten(BLEDevice central, BLECharacteristic characterist
 void csetCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic)
 {
   if (((int16_t)csetCharacteristic.value().toInt() != c_set) && ((int16_t)csetCharacteristic.value().toInt() > 0))
+  {
     c_set = (int16_t)csetCharacteristic.value().toInt();
-  saveConfig("c_set", (&c_set));
+    saveConfig("c_set", (&c_set));
+  }
 }
 
 void fixvelCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic)
 {
-  fixvel = (unsigned int)fixvelCharacteristic.value().toInt();
+  if ((int16_t)fixvelCharacteristic.value().toInt() != fixvel)
+  {
+    fixvel = (unsigned int)fixvelCharacteristic.value().toInt();
+    saveConfig("fix_v", (&fixvel));
+  }
 }
 
 static void pcnt_example_init(pcnt_unit_t unit, float lim)
@@ -296,81 +412,136 @@ void oled_update(void *parameter)
 {
   for (;;)
   {
-    oled.clear();
-    oled.setCursorXY(0, 0);
-    oled.setScale(1);
-    oled.print("Об. ");
-    oled.setScale(3);
-    oled.print((float)count / 2, 1);
-    oled.setScale(1);
-    oled.print("/");
-    oled.print(n_set, 1);
-    oled.setCursorXY(0, 31);
-    oled.print("Цк. ");
-    oled.setScale(3);
-    oled.print(it_c);
-    oled.setScale(1);
-    oled.print("/");
-    oled.print(c_set, 1);
-    // oled.setCursorXY(80, 46);
-    // oled.print(*vel);
-    // oled.print("%");
+    // oled.clear();
+    // oled.setCursorXY(0, 0);
     // oled.setScale(1);
-    // oled_print();
-    oled.update();
+    // oled.print("Об. ");
+    // oled.setScale(3);
+    // oled.print((float)count / 2, 1);
+    // oled.setScale(1);
+    // oled.print("/");
+    // oled.print(n_set, 1);
+    // oled.setCursorXY(0, 31);
+    // oled.print("Цк. ");
+    // oled.setScale(3);
+    // oled.print(it_c);
+    // oled.setScale(1);
+    // oled.print("/");
+    // oled.print(c_set, 1);
+    // // oled.setCursorXY(80, 46);
+    // // oled.print(*vel);
+    // // oled.print("%");
+    // // oled.setScale(1);
+    // // oled_print();
+    // oled.update();
+    static int16_t lc_couunt = 0;
+    if (lc_couunt != count) {
+      lc_couunt = count;
+      ncntCharacteristic.setValue(String((float)count / 2));
+    }
+    static int16_t lc_it_c = 0;
+    if (lc_it_c != it_c) {
+      lc_it_c = it_c;
+      ccntCharacteristic.setValue(String(lc_it_c));
+    }
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
+void ARDUINO_ISR_ATTR sx_isr()
+{
+  is_intr = true;
+}
+
 void setup()
 {
-  Serial.begin(9600);
-  while (!Serial)
-    ;
-  SPIFFS.begin();
-  file = SPIFFS.open("/config.txt", FILE_READ);
-  deserializeJson(doc, file);
-  n_set = doc["n_set"];
-  c_set = doc["c_set"];
-  file.close();
+  // Serial.begin(9600);
+  // while (!Serial)
+  //   ;
+  // FFat.format();
+  // if (!FFat.begin())
+  // {
+  //   Serial.println("FFat Mount Failed");
+  //   return;
+  // }
+  // elseF
+
+  // oled.init(); // инициализация
+  // oled.clear();
+  // oled.setScale(1);
+  {
+    SPIFFS.begin();
+    file = SPIFFS.open("/config.txt", FILE_READ);
+    deserializeJson(doc, file);
+    n_set = doc["n_set"];
+    c_set = doc["c_set"];
+    fixvel = doc["fix_v"];
+    file.close();
+  }
   // pinMode(ledPin, OUTPUT); // use the LED pin as an output
 
-  // begin initialization
+  Wire.begin();
 
-  if (!mcp.begin_SPI(5))
+  // // Call io.begin(<address>) to initialize the SX1509. If it
+  // // successfully communicates, it'll return 1.
+  if (io.begin() == false)
   {
-    Serial.println("Error.");
+    Serial.println("Failed to communicate. Check wiring and address of SX1509.");
     while (1)
-      ;
+      ; // If we fail to communicate, loop forever.
   }
+  mcp = &io;
+  //   // begin initialization
+  // delay(1000);
+  // if (!mcp.begin_SPI(5))
+  // {
+  //   // Serial.println("Error.");
+  //   while (1)
+  //     ;
+  // }
   // for (int i : Enum.GetValues(typeof(mcp_ins)))
-  mcp.pinMode(al_stop, INPUT);
-  mcp.pinMode(main_rot1, INPUT);
-  mcp.pinMode(main_rot2, INPUT);
-  mcp.pinMode(main_kar1, INPUT);
-  mcp.pinMode(main_kar2, INPUT);
-  mcp.pinMode(main_aut, INPUT);
-  mcp.pinMode(main_cut, INPUT);
-  mcp.pinMode(sens_kar1, INPUT);
-  mcp.pinMode(sens_kar2, INPUT);
-  mcp.pinMode(sens_cut, INPUT);
-  deb_al_stop.attach(mcp, al_stop, 5);
-  deb_main_rot1.attach(mcp, main_rot1, 5);
-  deb_main_rot2.attach(mcp, main_rot2, 5);
-  deb_main_kar1.attach(mcp, main_kar1, 5);
-  deb_main_kar2.attach(mcp, main_kar2, 5);
-  deb_main_aut.attach(mcp, main_aut, 5);
-  deb_main_cut.attach(mcp, main_cut, 5);
-  deb_sens_kar1.attach(mcp, sens_kar1, 5);
-  deb_sens_kar2.attach(mcp, sens_kar2, 5);
-  deb_sens_cut.attach(mcp, sens_cut, 5);
+  pinMode(5, INPUT_PULLUP);
+  attachInterrupt(5, sx_isr, FALLING);
+  // mcp.pinMode(al_stop, INPUT);
+  // mcp.pinMode(main_rot1, INPUT);
+  // mcp.pinMode(main_rot2, INPUT);
+  // mcp.pinMode(main_kar1, INPUT);
+  // mcp.pinMode(main_kar2, INPUT);
+  // mcp.pinMode(main_aut, INPUT);
+  // mcp.pinMode(main_cut, INPUT);
+  // mcp.pinMode(sens_kar1, INPUT);
+  // mcp.pinMode(sens_kar2, INPUT);
+  // mcp.pinMode(sens_cut, INPUT);
+  // deb_al_stop.attach(mcp, al_stop, 5);
+  // deb_main_rot1.attach(mcp, main_rot1, 5);
+  // deb_main_rot2.attach(mcp, main_rot2, 5);
+  // deb_main_kar1.attach(mcp, main_kar1, 5);
+  // deb_main_kar2.attach(mcp, main_kar2, 5);
+  // deb_main_aut.attach(mcp, main_aut, 5);
+  // deb_main_cut.attach(mcp, main_cut, 5);
+  // deb_sens_kar1.attach(mcp, sens_kar1, 5);
+  // deb_sens_kar2.attach(mcp, sens_kar2, 5);
+  // deb_sens_cut.attach(mcp, sens_cut, 5);
+
+
+  io.debounceTime(8);
+  deb_main_cut.attach(&io, main_cut);
+  deb_al_stop.attach(&io, al_stop);
+  deb_main_rot1.attach(&io, main_rot1);
+  deb_main_rot2.attach(&io, main_rot2);
+  deb_main_kar1.attach(&io, main_kar1);
+  deb_main_kar2.attach(&io, main_kar2);
+  deb_main_aut.attach(&io, main_aut);
+  deb_sens_kar1.attach(&io, sens_kar1);
+  deb_sens_kar2.attach(&io, sens_kar2);
+  deb_sens_cut.attach(&io, sens_cut);
   pinMode(sens_rot, INPUT);
   pinMode(BUILTIN_LED, OUTPUT);
   pinMode(vel_rot, OUTPUT);
-  mcp.pinMode(FWD_ROT, OUTPUT);
-  mcp.pinMode(FWD_KAR, OUTPUT);
-  mcp.pinMode(REV_KAR, OUTPUT);
-  mcp.pinMode(FWD_CUT, OUTPUT);
+  mcp->pinMode(FWD_ROT, OUTPUT);
+  mcp->pinMode(FWD_KAR, OUTPUT);
+  mcp->pinMode(REV_KAR, OUTPUT);
+  mcp->pinMode(FWD_CUT, OUTPUT);
   ledcSetup(0, 20, 12);
   ledcWrite(0, 0);
   ledcAttachPin(vel_rot, 0);
@@ -386,11 +557,13 @@ void setup()
       ;
   }
   // set the local name peripheral advertises
-  BLE.setLocalName("Рабица 2");
+  BLE.setLocalName("Рабица 1");
   // set the UUID for the service this peripheral advertises
   BLE.setAdvertisedService(ledService);
   nsetCharacteristic.addDescriptor(nsetDesc);
+  ncntCharacteristic.addDescriptor(ncntDesc);
   csetCharacteristic.addDescriptor(csetDesc);
+  ccntCharacteristic.addDescriptor(ccntDesc);
   fixvelCharacteristic.addDescriptor(fixvelDesc);
   regvelCharacteristic.addDescriptor(regvelDesc);
 
@@ -400,11 +573,15 @@ void setup()
   fixvelCharacteristic.setEventHandler(BLEWritten, fixvelCharacteristicWritten);
   // set an initial value for the characteristic
   nsetCharacteristic.setValue(String(n_set));
+  ncntCharacteristic.setValue(String((float)count / 2));
   csetCharacteristic.setValue(String(c_set));
+  ccntCharacteristic.setValue(String(it_c));
   fixvelCharacteristic.setValue(String(fixvel));
   // add the characteristic to the service
   ledService.addCharacteristic(nsetCharacteristic);
+  ledService.addCharacteristic(ncntCharacteristic);
   ledService.addCharacteristic(csetCharacteristic);
+  ledService.addCharacteristic(ccntCharacteristic);
   ledService.addCharacteristic(fixvelCharacteristic);
   ledService.addCharacteristic(regvelCharacteristic);
 
@@ -418,31 +595,91 @@ void setup()
   pcnt_example_init(pcnt_unit, n_set);
   pcnt_counter_pause(pcnt_unit);
   pcnt_counter_clear(pcnt_unit);
-  oled.init(); // инициализация
-  oled.clear();
-  oled.setScale(1);
   // oled_print();
   // oled.update();
   fwdkar = &main_fwd_kar;
   revkar = &main_rev_kar;
   cut = &cut_main;
   vel = &regvel;
-  xTaskCreatePinnedToCore(oled_update, "OLED UPDATE", 4096, NULL, 1, NULL, 1);
   tm = millis();
+  // xTaskCreatePinnedToCore(oled_update, "OLED UPDATE", 4096, NULL, 1, NULL, 1);
 }
 
 void loop()
 {
-  deb_al_stop.update();
-  deb_main_aut.update();
-  deb_main_rot1.update();
-  deb_main_rot2.update();
-  deb_main_kar1.update();
-  deb_main_kar2.update();
-  deb_main_cut.update();
-  deb_sens_kar1.update();
-  deb_sens_kar2.update();
-  deb_sens_cut.update();
+  if (is_intr)
+  {
+    is_intr = false;
+    intr_src = io.interruptSource();
+    // Serial.println(intr_src, BIN);
+  }
+
+  {
+    // if (io.checkInterrupt(al_stop))
+    //   Serial.println(io.digitalRead(al_stop) == HIGH ? "al_stop_on" : "al_stop_off");
+    // if
+    (deb_main_aut.update(intr_src));
+    // Serial.println(deb_main_aut.read() ? "main_aut_on" : "main_aut_off");
+    // if
+    (deb_al_stop.update(intr_src));
+    // Serial.println(deb_al_stop.read() ? "al_stop_on" : "al_stop_off");
+    // if
+    (deb_main_rot1.update(intr_src));
+    // Serial.println(deb_main_rot1.read() ? "main_rot1_on" : "main_rot1_off");
+    // if
+    (deb_main_rot2.update(intr_src));
+    // Serial.println(deb_main_rot2.read() ? "main_rot2_on" : "main_rot2_off");
+    // if
+    (deb_main_kar1.update(intr_src));
+    // Serial.println(deb_main_kar1.read() ? "main_kar1_on" : "main_kar1_off");
+    // if
+    (deb_main_kar2.update(intr_src));
+    // Serial.println(deb_main_kar2.read() ? "main_kar2_on" : "main_kar2_off");
+    // if
+    (deb_main_cut.update(intr_src));
+    // Serial.println(deb_main_cut.read() ? "main_cut_on" : "main_cut_off");
+    // if
+    (deb_sens_kar1.update(intr_src));
+    // Serial.println(deb_sens_kar1.read() ? "sens_kar1_on" : "sens_kar1_off");
+    // if
+    (deb_sens_kar2.update(intr_src));
+    // Serial.println(deb_sens_kar2.read() ? "sens_kar2_on" : "sens_kar2_off");
+    // if
+    (deb_sens_cut.update(intr_src));
+    // Serial.println(deb_sens_cut.read() ? "sens_cut_on" : "sens_cut_off");
+    // if (deb_al_stop.fell())
+    //   Serial.println("al_stop is fell");
+    // if (deb_al_stop.rose())
+    //   Serial.println("al_stop is rose");
+    // if (deb_main_aut.fell())
+    //   Serial.println("main_aut is fell");
+    // if (deb_main_aut.rose())
+    //   Serial.println("main_aut is rose");
+    // if (deb_main_cut.fell())
+    //   Serial.println("main_cut is fell");
+    // if (deb_main_cut.rose())
+    //   Serial.println("main_cut is rose");
+    // if (deb_main_kar1.fell())
+    //   Serial.println("main_kar1 is fell");
+    // if (deb_main_kar1.rose())
+    //   Serial.println("main_kar1 is rose");
+    // if (deb_main_kar2.fell())
+    //   Serial.println("main_kar2 is fell");
+    // if (deb_main_kar2.rose())
+    //   Serial.println("main_kar2 is rose");
+    // if (deb_al_stop.fell()) Serial.println("al_stop is fell");
+    // if (deb_al_stop.rose()) Serial.println("al_stop is rose");
+    // if (deb_al_stop.fell()) Serial.println("al_stop is fell");
+    // if (deb_al_stop.rose()) Serial.println("al_stop is rose");
+    // if (deb_al_stop.fell()) Serial.println("al_stop is fell");
+    // if (deb_al_stop.rose()) Serial.println("al_stop is rose");
+    // if (deb_al_stop.fell()) Serial.println("al_stop is fell");
+    // if (deb_al_stop.rose()) Serial.println("al_stop is rose");
+    // if (deb_al_stop.fell()) Serial.println("al_stop is fell");
+    // if (deb_al_stop.rose()) Serial.println("al_stop is rose");
+    if (intr_src != 0)
+      intr_src = 0;
+  }
   res = xQueueReceive(pcnt_evt_queue, &evt, 0);
   if (res == pdTRUE)
   {
@@ -472,7 +709,7 @@ void loop()
     pcnt_get_counter_value(pcnt_unit, &count);
     // ESP_LOGI(TAG, "Current counter value :%d", count);
   }
-  if (!deb_sens_kar2.read())
+  if (!deb_sens_kar1.read())
   {
     if (cnt_lim != n_set)
     {
@@ -480,7 +717,7 @@ void loop()
       changing_pcnt();
     }
   }
-  if (!deb_sens_kar1.read())
+  if (!deb_sens_kar2.read())
   {
     if (cnt_lim != (n_set + 1))
     {
@@ -535,7 +772,7 @@ void loop()
       cnt_rot = &cnt_aut_rot;
     if (!deb_sens_cut.fell())
       cut_aut = /* ((!aut_fwd_kar && mcp.digitalRead(FWD_KAR)) || (!aut_rev_kar && mcp.digitalRead(REV_KAR)))  */
-          (!cnt_aut_rot && mcp.digitalRead(FWD_ROT)) || cut_aut;
+          (!cnt_aut_rot && fwd_rot_out) || cut_aut;
     else if (cut_aut)
     {
       cut_aut = false;
@@ -546,8 +783,8 @@ void loop()
         // cnt_aut_rot = true;
       }
     }
-    aut_fwd_kar = (((!cut_aut && mcp.digitalRead(FWD_CUT) && !deb_sens_kar2.read()) || aut_fwd_kar) && deb_sens_kar1.read());
-    aut_rev_kar = (((!cut_aut && mcp.digitalRead(FWD_CUT) && !deb_sens_kar1.read()) || aut_rev_kar) && deb_sens_kar2.read());
+    aut_fwd_kar = (((!cut_aut && fwd_cut_out && !deb_sens_kar2.read()) || aut_fwd_kar) && deb_sens_kar1.read());
+    aut_rev_kar = (((!cut_aut && fwd_cut_out && !deb_sens_kar1.read()) || aut_rev_kar) && deb_sens_kar2.read());
   }
 
   if (!deb_al_stop.read())
@@ -556,10 +793,10 @@ void loop()
       resume_cnt();
     else
       pause_cnt();
-    mcp.digitalWrite(FWD_ROT, (rot || *cnt_rot));
-    mcp.digitalWrite(FWD_KAR, *fwdkar);
-    mcp.digitalWrite(REV_KAR, *revkar);
-    mcp.digitalWrite(FWD_CUT, *cut);
+    fwd_rot_out = rot || *cnt_rot;
+    fwd_kar_out = *fwdkar;
+    rev_kar_out = *revkar;
+    fwd_cut_out = *cut;
   }
   else
   {
@@ -571,66 +808,46 @@ void loop()
         cut_main = false;
     }
     pause_cnt();
-    mcp.digitalWrite(FWD_ROT, false);
-    mcp.digitalWrite(FWD_KAR, false);
-    mcp.digitalWrite(REV_KAR, false);
-    mcp.digitalWrite(FWD_CUT, false);
+    fwd_rot_out = false;
+    fwd_kar_out = false;
+    rev_kar_out = false;
+    fwd_cut_out = false;
   }
-  BLE.poll();
+  if (fwd_rot_out != tmp_fwd_rot_out)
+  {
+    tmp_fwd_rot_out = fwd_rot_out;
+    mcp->digitalWrite(FWD_ROT, tmp_fwd_rot_out);
+  }
+  if (fwd_kar_out != tmp_fwd_kar_out)
+  {
+    tmp_fwd_kar_out = fwd_kar_out;
+    mcp->digitalWrite(FWD_KAR, tmp_fwd_kar_out);
+  }
+  if (rev_kar_out != tmp_rev_kar_out)
+  {
+    tmp_rev_kar_out = rev_kar_out;
+    mcp->digitalWrite(REV_KAR, tmp_rev_kar_out);
+  }
+  if (fwd_cut_out != tmp_fwd_cut_out)
+  {
+    tmp_fwd_cut_out = fwd_cut_out;
+    mcp->digitalWrite(FWD_CUT, tmp_fwd_cut_out);
+  }
   if ((millis() - tm) >= 300)
   {
-    tm = millis();
-    // static byte cnt_zero_vel = 0;
-    // if ((*cnt_rot) && !deb_al_stop.read())
-    // {
-    //   if ((old_count == count) && (cnt_zero_vel < 5))
-    //   {
-    //     cnt_zero_vel++;
-    //   }
-    //   else
-    //   {
-    //     if ((cnt_zero_vel == 5))
-    //     {
-    //       *cnt_rot = false;
-    //       fix_vel = false;
-    //     }
-    //     old_count = count;
-    //     cnt_zero_vel = 0;
-    //   }
-    // }
-
-    // static int16_t lcnt = 0;
-    // if (count != lcnt)
-    // {
-    //   lcnt = count;
-    //   Serial.print("lcnt = ");
-    //   Serial.println(lcnt);
-    // }
-    // static uint16_t l_it_c = 0;
-    // if (l_it_c != it_c)
-    // {
-    //   l_it_c = it_c;
-    //   Serial.print("l_it_c = ");
-    //   Serial.println(l_it_c);
-    // }
-
-    // oled.clear();
-    // oled.setScale(2);
-    // oled.setCursorXY(33, 31);
-    // oled.print(it_c);
-    // oled.setCursorXY(33, 16);
-    // oled.print((float) count/2, 1);
-    // if (!fix_vel)
+    tm = millis();    
+    static int16_t lc_couunt = 0;
+    if (lc_couunt != count) {
+      lc_couunt = count;
+      ncntCharacteristic.setValue(String((float)count / 2));
+    }
+    static int16_t lc_it_c = 0;
+    if (lc_it_c != it_c) {
+      lc_it_c = it_c;
+      ccntCharacteristic.setValue(String(lc_it_c));
+    }
     regvel = map(analogRead(36), 0, 4095, 0, 100);
-    // else
-    //   vel = (byte)fixvel;
     setvel();
-    // oled.setCursorXY(80, 46);
-    // oled.print(*vel);
-    // oled.print("%");
-    // oled.setScale(1);
-    // oled_print();
-    // oled.update();
-    // Serial.println("al_stop Pressed!");
   }
+  BLE.poll();
 }
