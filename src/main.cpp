@@ -444,6 +444,7 @@ void oled_update(void *parameter)
       lc_it_c = it_c;
       ccntCharacteristic.setValue(String(lc_it_c));
     }
+    BLE.poll();
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -602,7 +603,7 @@ void setup()
   cut = &cut_main;
   vel = &regvel;
   tm = millis();
-  // xTaskCreatePinnedToCore(oled_update, "OLED UPDATE", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(oled_update, "OLED UPDATE", 4096, NULL, 1, NULL, 1);
 }
 
 void loop()
@@ -836,18 +837,17 @@ void loop()
   if ((millis() - tm) >= 300)
   {
     tm = millis();    
-    static int16_t lc_couunt = 0;
-    if (lc_couunt != count) {
-      lc_couunt = count;
-      ncntCharacteristic.setValue(String((float)count / 2));
-    }
-    static int16_t lc_it_c = 0;
-    if (lc_it_c != it_c) {
-      lc_it_c = it_c;
-      ccntCharacteristic.setValue(String(lc_it_c));
-    }
+    // static int16_t lc_couunt = 0;
+    // if (lc_couunt != count) {
+    //   lc_couunt = count;
+    //   ncntCharacteristic.setValue(String((float)count / 2));
+    // }
+    // static int16_t lc_it_c = 0;
+    // if (lc_it_c != it_c) {
+    //   lc_it_c = it_c;
+    //   ccntCharacteristic.setValue(String(lc_it_c));
+    // }
     regvel = map(analogRead(36), 0, 4095, 0, 100);
     setvel();
   }
-  BLE.poll();
 }
