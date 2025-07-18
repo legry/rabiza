@@ -67,8 +67,7 @@ GyverOLED<SSH1106_128x64> oled;
 File file;
 JsonDocument doc;
 float n_set = 15.5, cnt_lim = 0;
-int16_t c_set = 25, it_c = 0;
-byte *vel = 0, prev_vel = 0, fixvel = 15, regvel = 0;
+int16_t *vel = 0, c_set = 25, it_c = 0, fixvel = 15, prev_vel = 0, regvel = 0;
 unsigned long tm = 0;
 bool aut_mode_perm = false, cnt_main_rot = false, cnt_aut_rot = false, rot = false, cnt_lim_chng = false, *fwdkar, *revkar, aut_fwd_kar = false,
      aut_rev_kar = false, main_fwd_kar = false, main_rev_kar = false, *cut, cut_main = false, cut_aut = false, fix_vel = false, *cnt_rot, isr_inst = false;
@@ -227,7 +226,11 @@ void csetCharacteristicWritten(BLEDevice central, BLECharacteristic characterist
 
 void fixvelCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic)
 {
-  fixvel = (unsigned int)fixvelCharacteristic.value().toInt();
+  if ((int16_t)fixvelCharacteristic.value().toInt() != fixvel)
+  {
+    fixvel = (unsigned int)fixvelCharacteristic.value().toInt();
+    saveConfig("fix_v", (&fixvel));
+  }
 }
 
 static void pcnt_example_init(pcnt_unit_t unit, float lim)
@@ -332,6 +335,7 @@ void setup()
   deserializeJson(doc, file);
   n_set = doc["n_set"];
   c_set = doc["c_set"];
+  fixvel = doc["fix_v"];
   file.close();
   // pinMode(ledPin, OUTPUT); // use the LED pin as an output
 
